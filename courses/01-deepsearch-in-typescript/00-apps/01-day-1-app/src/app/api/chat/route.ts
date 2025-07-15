@@ -1,9 +1,14 @@
 import type { Message } from "ai";
-import { streamText, createDataStreamResponse } from "ai";
+import {
+  streamText,
+  createDataStreamResponse,
+  appendResponseMessages,
+} from "ai";
 import { z } from "zod";
 import { model } from "~/models";
 import { auth } from "~/server/auth";
 import { searchSerper } from "~/serper";
+import { upsertChat } from "~/server/db/queries";
 
 export const maxDuration = 60;
 
@@ -16,11 +21,25 @@ export async function POST(request: Request) {
 
   const body = (await request.json()) as {
     messages: Array<Message>;
+    chatId?: string;
   };
 
   return createDataStreamResponse({
     execute: async (dataStream) => {
-      const { messages } = body;
+      const { messages, chatId } = body;
+
+      // Create a new chat if chatId is not provided
+      let currentChatId = chatId;
+      if (!currentChatId) {
+        currentChatId = crypto.randomUUID();
+        // Create the chat with just the user's message before starting the stream
+        await upsertChat({
+          userId: session.user.id,
+          chatId: currentChatId,
+          title: messages[0]?.content?.slice(0, 100) || "New Chat",
+          messages: messages,
+        });
+      }
 
       const result = streamText({
         model,
@@ -58,6 +77,22 @@ Be conversational and helpful while providing accurate, up-to-date information f
               }));
             },
           },
+        },
+        onFinish: async ({ text, finishReason, usage, response }) => {
+          const responseMessages = response.messages;
+
+          const updatedMessages = appendResponseMessages({
+            messages,
+            responseMessages,
+          });
+
+          // Save the updated messages to the database
+          await upsertChat({
+            userId: session.user.id,
+            chatId: currentChatId,
+            title: messages[0]?.content?.slice(0, 100) || "New Chat",
+            messages: updatedMessages,
+          });
         },
       });
 
