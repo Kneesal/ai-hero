@@ -39,6 +39,12 @@ export async function POST(request: Request) {
           title: messages[0]?.content?.slice(0, 100) || "New Chat",
           messages: messages,
         });
+
+        // Send the new chat ID to the frontend
+        dataStream.writeData({
+          type: "NEW_CHAT_CREATED",
+          chatId: currentChatId,
+        });
       }
 
       const result = streamText({
