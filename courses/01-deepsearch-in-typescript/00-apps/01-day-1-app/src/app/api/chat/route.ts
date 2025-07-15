@@ -21,21 +21,20 @@ export async function POST(request: Request) {
 
   const body = (await request.json()) as {
     messages: Array<Message>;
-    chatId?: string;
+    chatId: string;
+    isNewChat: boolean;
   };
 
   return createDataStreamResponse({
     execute: async (dataStream) => {
-      const { messages, chatId } = body;
+      const { messages, chatId, isNewChat } = body;
 
-      // Create a new chat if chatId is not provided
-      let currentChatId = chatId;
-      if (!currentChatId) {
-        currentChatId = crypto.randomUUID();
+      // Create a new chat if isNewChat is true
+      if (isNewChat) {
         // Create the chat with just the user's message before starting the stream
         await upsertChat({
           userId: session.user.id,
-          chatId: currentChatId,
+          chatId: chatId,
           title: messages[0]?.content?.slice(0, 100) || "New Chat",
           messages: messages,
         });
@@ -43,7 +42,7 @@ export async function POST(request: Request) {
         // Send the new chat ID to the frontend
         dataStream.writeData({
           type: "NEW_CHAT_CREATED",
-          chatId: currentChatId,
+          chatId: chatId,
         });
       }
 
@@ -95,7 +94,7 @@ Be conversational and helpful while providing accurate, up-to-date information f
           // Save the updated messages to the database
           await upsertChat({
             userId: session.user.id,
-            chatId: currentChatId,
+            chatId: chatId,
             title: messages[0]?.content?.slice(0, 100) || "New Chat",
             messages: updatedMessages,
           });

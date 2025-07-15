@@ -1,4 +1,4 @@
-import { eq, desc } from "drizzle-orm";
+import { eq, desc, and } from "drizzle-orm";
 import type { Message } from "ai";
 
 import { db } from "./index";
@@ -73,7 +73,7 @@ export const getChat = async (opts: { userId: string; chatId: string }) => {
   const { userId, chatId } = opts;
 
   const chat = await db.query.chats.findFirst({
-    where: eq(chats.id, chatId) && eq(chats.userId, userId),
+    where: and(eq(chats.id, chatId), eq(chats.userId, userId)),
     with: {
       messages: {
         orderBy: [messages.order],
@@ -89,7 +89,8 @@ export const getChat = async (opts: { userId: string; chatId: string }) => {
   const aiMessages: Message[] = chat.messages.map((msg) => ({
     id: msg.id.toString(),
     role: msg.role as "user" | "assistant" | "system",
-    content: msg.parts as string,
+    parts: msg.parts as Message["parts"],
+    content: "",
   }));
 
   return {
