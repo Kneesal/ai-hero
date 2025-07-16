@@ -30,6 +30,12 @@ export async function POST(request: Request) {
     return new Response("Unauthorized", { status: 401 });
   }
 
+  // Create a trace at the beginning to capture all operations
+  const trace = langfuse.trace({
+    name: "chat",
+    userId: session.user.id,
+  });
+
   const body = (await request.json()) as {
     messages: Array<Message>;
     chatId?: string;
@@ -45,25 +51,91 @@ export async function POST(request: Request) {
   let currentChatId = chatId;
   if (!currentChatId) {
     const newChatId = crypto.randomUUID();
-    await upsertChat({
-      userId: session.user.id,
-      chatId: newChatId,
-      title: messages[messages.length - 1]!.content.slice(0, 50) + "...",
-      messages: messages, // Only save the user's message initially
+
+    // Create span for upsertChat operation
+    const upsertChatSpan = trace.span({
+      name: "create-new-chat",
+      input: {
+        userId: session.user.id,
+        chatId: newChatId,
+        title: messages[messages.length - 1]!.content.slice(0, 50) + "...",
+        messageCount: messages.length,
+      },
     });
+
+    try {
+      await upsertChat({
+        userId: session.user.id,
+        chatId: newChatId,
+        title: messages[messages.length - 1]!.content.slice(0, 50) + "...",
+        messages: messages, // Only save the user's message initially
+      });
+
+      upsertChatSpan.end({
+        output: {
+          success: true,
+          chatId: newChatId,
+        },
+      });
+    } catch (error) {
+      upsertChatSpan.end({
+        output: {
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      });
+      throw error;
+    }
+
     currentChatId = newChatId;
   } else {
-    // Verify the chat belongs to the user
-    const chat = await db.query.chats.findFirst({
-      where: eq(chats.id, currentChatId),
+    // Create span for chat verification
+    const verifyChatSpan = trace.span({
+      name: "verify-chat-ownership",
+      input: {
+        chatId: currentChatId,
+        userId: session.user.id,
+      },
     });
-    if (!chat || chat.userId !== session.user.id) {
-      return new Response("Chat not found or unauthorized", { status: 404 });
+
+    try {
+      // Verify the chat belongs to the user
+      const chat = await db.query.chats.findFirst({
+        where: eq(chats.id, currentChatId),
+      });
+
+      if (!chat || chat.userId !== session.user.id) {
+        verifyChatSpan.end({
+          output: {
+            success: false,
+            error: "Chat not found or unauthorized",
+            chatFound: !!chat,
+            chatUserId: chat?.userId,
+          },
+        });
+        return new Response("Chat not found or unauthorized", { status: 404 });
+      }
+
+      verifyChatSpan.end({
+        output: {
+          success: true,
+          chatId: chat.id,
+          chatTitle: chat.title,
+        },
+      });
+    } catch (error) {
+      verifyChatSpan.end({
+        output: {
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      });
+      throw error;
     }
   }
 
-  // Create a trace with user and session information
-  const trace = langfuse.trace({
+  // Update the trace with the sessionId now that we have the chatId
+  trace.update({
     sessionId: currentChatId,
     name: "chat",
     userId: session.user.id,
@@ -142,6 +214,7 @@ This two-step process ensures you have the most current and comprehensive inform
                 title: result.title,
                 link: result.link,
                 snippet: result.snippet,
+                date: result.date, // Include publication date if available
               }));
             },
           },
@@ -196,13 +269,42 @@ This two-step process ensures you have the most current and comprehensive inform
             return;
           }
 
-          // Save the complete chat history
-          await upsertChat({
-            userId: session.user.id,
-            chatId: currentChatId,
-            title: lastMessage.content.slice(0, 50) + "...",
-            messages: updatedMessages,
+          // Create span for saving complete chat history
+          const saveChatHistorySpan = trace.span({
+            name: "save-chat-history",
+            input: {
+              userId: session.user.id,
+              chatId: currentChatId,
+              title: lastMessage.content.slice(0, 50) + "...",
+              messageCount: updatedMessages.length,
+            },
           });
+
+          try {
+            // Save the complete chat history
+            await upsertChat({
+              userId: session.user.id,
+              chatId: currentChatId,
+              title: lastMessage.content.slice(0, 50) + "...",
+              messages: updatedMessages,
+            });
+
+            saveChatHistorySpan.end({
+              output: {
+                success: true,
+                chatId: currentChatId,
+                savedMessageCount: updatedMessages.length,
+              },
+            });
+          } catch (error) {
+            saveChatHistorySpan.end({
+              output: {
+                success: false,
+                error: error instanceof Error ? error.message : String(error),
+              },
+            });
+            throw error;
+          }
 
           // Flush the trace to Langfuse
           await langfuse.flushAsync();
